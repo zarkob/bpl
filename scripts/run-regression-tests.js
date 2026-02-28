@@ -6,8 +6,15 @@ const vm = require('vm');
 
 function loadParser(parserPath) {
   const parserCode = fs.readFileSync(parserPath, 'utf8') + '\nthis.BpmnLiteParser=BpmnLiteParser;';
-  const ctx = { console: { log: () => {}, warn: () => {}, error: () => {} } };
+  const ctx = {
+    console: { log: () => {}, warn: () => {}, error: () => {} },
+    module: { exports: {} },
+    exports: {},
+    window: {}
+  };
   vm.createContext(ctx);
+  const engineCode = fs.readFileSync(path.join(path.dirname(parserPath), 'connectivity-engine.js'), 'utf8');
+  vm.runInContext(engineCode, ctx);
   vm.runInContext(parserCode, ctx);
   return ctx.BpmnLiteParser;
 }

@@ -7,17 +7,14 @@ const vm = require('vm');
 const verbose = process.argv.includes('--verbose') || process.env.CONNECTIVITY_TEST_VERBOSE === '1';
 const runtimeConsole = verbose ? console : { log: () => {}, warn: () => {}, error: () => {} };
 
-function loadParser(ParserPath) {
-  const parserCode = fs.readFileSync(ParserPath, 'utf8') + '\nthis.BpmnLiteParser=BpmnLiteParser;';
-  const ctx = { console: runtimeConsole };
-  vm.createContext(ctx);
-  vm.runInContext(parserCode, ctx);
-  return ctx.BpmnLiteParser;
+function loadConnectivityEngine(enginePath, context) {
+  const engineCode = fs.readFileSync(enginePath, 'utf8');
+  vm.runInContext(engineCode, context);
 }
 
 function loadConnectivityTests(testsPath) {
   const testCode = fs.readFileSync(testsPath, 'utf8');
-  const ctx = { console: runtimeConsole, module: { exports: {} }, exports: {} };
+  const ctx = { console: runtimeConsole, module: { exports: {} }, exports: {}, window: {} };
   vm.createContext(ctx);
   vm.runInContext(testCode, ctx);
   return ctx.module.exports.runConnectivityTests;
@@ -26,9 +23,15 @@ function loadConnectivityTests(testsPath) {
 function main() {
   const root = path.resolve(__dirname, '..');
   const parserPath = path.join(root, 'shared', 'bpmn-lite-parser.js');
+  const enginePath = path.join(root, 'shared', 'connectivity-engine.js');
   const testsPath = path.join(root, 'test-connectivity.js');
 
-  const ParserClass = loadParser(parserPath);
+  const parserCode = fs.readFileSync(parserPath, 'utf8') + '\nthis.BpmnLiteParser=BpmnLiteParser;';
+  const parserCtx = { console: runtimeConsole, module: { exports: {} }, exports: {}, window: {} };
+  vm.createContext(parserCtx);
+  loadConnectivityEngine(enginePath, parserCtx);
+  vm.runInContext(parserCode, parserCtx);
+  const ParserClass = parserCtx.BpmnLiteParser;
   const runConnectivityTests = loadConnectivityTests(testsPath);
   const results = runConnectivityTests(ParserClass);
   const failed = results.filter(result => !result.passed);

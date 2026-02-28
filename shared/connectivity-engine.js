@@ -1,477 +1,253 @@
 // Connectivity Engine for BPL Parser
-// Implements the correct connectivity model from CONNECTIVITY_GUIDE.md
+// Canonical ordered connectivity passes, reused by browser and tests.
 
 class ConnectivityEngine {
   constructor(parser) {
     this.parser = parser;
-    this.globalTaskOrder = [];
-    this.explicitConnections = [];
   }
 
-  // Main method to establish all connections
   establishConnections() {
-    console.log('=== Establishing Connections ===');
-    
-    // Phase 1: Build global task order (excluding branches and comments)
-    this.buildGlobalTaskOrder();
-    
-    // Phase 2: Create implicit sequential connections
-    this.createImplicitConnections();
-    
-    // Phase 3: Process explicit arrow connections
-    this.processExplicitConnections();
-    
-    // Phase 4: Connect message flows
+    const globalTaskOrder = this.buildGlobalTaskOrder();
+    this.createImplicitConnections(globalTaskOrder);
+    this.processExplicitArrowConnections();
     this.connectMessageFlows();
-    
-    // Phase 5: Handle special cases (gateways, events)
-    this.handleSpecialConnections();
-    
-    console.log(`Total connections created: ${this.parser.connections.length}`);
+    this.handleSpecialConnections(globalTaskOrder);
+    this.parser.resolvePendingDataAssociations();
   }
 
-  // Build a global list of tasks in document order
   buildGlobalTaskOrder() {
-    console.log('Building global task order...');
-    
-    // Process all lines in order
+    const taskOrder = [];
     const lines = this.parser.originalText.split('\n');
-    
+
     for (let i = 0; i < lines.length; i++) {
       const line = lines[i].trim();
       if (!line) continue;
-      
-      // Skip connection breaks
-      if (line === '---' || line.match(/^-{3,}$/)) continue;
-      
-      // Skip technical comments
-      if (line.startsWith('//')) continue;
-      
-      // Check for lane change
-      if (line.startsWith('@')) {
-        this.parser.currentLane = line;
+      if (line === '---' || line.match(/^-{3,}$/) || line.startsWith('//') || line.startsWith(':')) {
         continue;
       }
-      
-      // Skip process definitions
-      if (line.startsWith(':')) continue;
-      
-      // Find tasks in this line
-      const taskIds = this.findTasksInLine(line, i);
-      taskIds.forEach(taskId => {
-        if (taskId && this.parser.tasks[taskId]) {
-          const task = this.parser.tasks[taskId];
-          // Include all task types except branches (they're handled by gateways)
-          if (task.type !== 'branch' && task.type !== 'comment') {
-            this.globalTaskOrder.push({
-              id: taskId,
-              lineNumber: i,
-              lane: task.lane
-            });
-          }
+      if (line.startsWith('@')) {
+        continue;
+      }
+
+      const tasksInLine = this.getTasksCreatedAtLine(i);
+      tasksInLine.forEach(taskId => {
+        const task = this.parser.tasks[taskId];
+        if (task && task.type !== 'branch' && task.type !== 'comment') {
+          taskOrder.push({
+            id: taskId,
+            lineNumber: i,
+            lane: task.lane
+          });
         }
       });
     }
-    
-    console.log(`Global task order: ${this.globalTaskOrder.length} tasks`);
+
+    return taskOrder;
   }
 
-  // Find all tasks defined in a line (handling arrows)
-  findTasksInLine(line, lineNumber) {
+  getTasksCreatedAtLine(lineNumber) {
     const tasks = [];
-    
-    // Split by arrows but keep the content
-    const parts = this.splitByArrows(line);
-    
-    for (const part of parts) {
-      if (part.type === 'content') {
-        // Check what type of element this is
-        const taskId = this.identifyAndGetTaskId(part.content, lineNumber);
-        if (taskId) {
-          tasks.push(taskId);
-          
-          // Store explicit connections for later processing
-          if (part.connections) {
-            this.explicitConnections.push({
-              sourceId: taskId,
-              connections: part.connections,
-              lineNumber: lineNumber
-            });
-          }
-        }
+    for (const [taskId, line] of Object.entries(this.parser.taskLineNumbers)) {
+      if (line === lineNumber) {
+        tasks.push(taskId);
       }
     }
-    
     return tasks;
   }
 
-  // Split line by arrows while preserving connections
-  splitByArrows(line) {
-    const parts = [];
-    let current = '';
-    let i = 0;
-    
-    while (i < line.length) {
-      if (line.substr(i, 2) === '->' || line.substr(i, 2) === '<-') {
-        if (current.trim()) {
-          // Store the current part
-          const lastPart = parts.length > 0 ? parts[parts.length - 1] : null;
-          
-          if (lastPart && lastPart.type === 'content') {
-            // Add forward connection to previous content
-            if (!lastPart.connections) lastPart.connections = [];
-            lastPart.connections.push({
-              direction: line.substr(i, 2),
-              target: null // Will be filled with next content
-            });
-          }
-          
-          parts.push({
-            type: 'content',
-            content: current.trim(),
-            connections: []
-          });
-        }
-        
-        // Store the arrow
-        parts.push({
-          type: 'arrow',
-          arrow: line.substr(i, 2)
-        });
-        
-        current = '';
-        i += 2;
-      } else {
-        current += line[i];
-        i++;
+  createImplicitConnections(globalTaskOrder) {
+    for (let i = 1; i < globalTaskOrder.length; i++) {
+      const prev = globalTaskOrder[i - 1];
+      const curr = globalTaskOrder[i];
+      const prevTask = this.parser.tasks[prev.id];
+
+      if (this.parser.hasConnectionBreakBetween(prev.lineNumber, curr.lineNumber)) {
+        continue;
       }
+
+      if (prevTask && prevTask.type === 'gateway') {
+        continue;
+      }
+
+      this.parser.addConnection('flow', prev.id, curr.id);
     }
-    
-    // Add last part
-    if (current.trim()) {
-      parts.push({
-        type: 'content',
-        content: current.trim(),
-        connections: []
+  }
+
+  processExplicitArrowConnections() {
+    const lines = this.parser.originalText.split('\n');
+    let contextLane = null;
+
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i].trim();
+      if (!line) continue;
+
+      if (line.startsWith('@')) {
+        contextLane = line;
+        continue;
+      }
+
+      if (!line.includes('->') && !line.includes('<-')) {
+        continue;
+      }
+
+      const connections = this.parseArrowConnections(line, i, contextLane);
+      connections.forEach(conn => {
+        this.parser.addConnection('flow', conn.from, conn.to);
       });
     }
-    
-    // Now connect the parts based on arrows
-    for (let j = 0; j < parts.length; j++) {
-      if (parts[j].type === 'arrow') {
-        const arrow = parts[j].arrow;
-        const prevPart = j > 0 ? parts[j - 1] : null;
-        const nextPart = j < parts.length - 1 ? parts[j + 1] : null;
-        
-        if (arrow === '->' && prevPart && nextPart && 
-            prevPart.type === 'content' && nextPart.type === 'content') {
-          // Forward connection
-          if (!prevPart.connections) prevPart.connections = [];
-          prevPart.connections.push({
-            direction: '->',
-            target: nextPart.content
-          });
-        } else if (arrow === '<-' && prevPart && nextPart && 
-                   prevPart.type === 'content' && nextPart.type === 'content') {
-          // Backward connection
-          if (!nextPart.connections) nextPart.connections = [];
-          nextPart.connections.push({
-            direction: '->',
-            target: prevPart.content
-          });
+  }
+
+  parseArrowConnections(line, lineNumber, contextLane = null) {
+    const connections = [];
+    const parts = this.parser.splitConnections(line);
+    const resolvedParts = [];
+
+    for (let i = 0; i < parts.length; i++) {
+      const part = parts[i];
+      if (part === '->' || part === '<-') {
+        resolvedParts.push({ type: 'arrow', value: part });
+      } else {
+        const taskId = this.resolvePartToTaskId(part, lineNumber, contextLane);
+        if (taskId) {
+          resolvedParts.push({ type: 'task', value: taskId });
         }
       }
     }
-    
-    return parts.filter(p => p.type === 'content');
-  }
 
-  // Identify element type and return its task ID
-  identifyAndGetTaskId(content, lineNumber) {
-    const firstChar = content.charAt(0);
-    
-    // Handle different element types
-    switch(firstChar) {
-      case '?': // Gateway
-        return this.findTaskByContent(content.substring(1).trim(), 'gateway');
-      case '!': // Event
-        return this.findTaskByContent(content.substring(1).trim(), 'event');
-      case '+': // Positive branch
-      case '-': // Negative branch
-        // For branches, extract just the branch name part
-        let branchName = content.substring(1).trim();
-        if (branchName.includes('->') || branchName.includes('<-')) {
-          branchName = branchName.split(/->|<-/)[0].trim();
-        }
-        return this.findTaskByContent(branchName, 'branch');
-      case '#': // Data object
-        return null; // Data objects don't participate in sequence flow
-      case '^': // Message flow
-        return null; // Message flows are handled separately
-      case '"': // Comment
-        return null; // Comments don't participate in flow
-      default:
-        // Regular task (including send:/receive:)
-        return this.findTaskByContent(content, 'task');
-    }
-  }
+    for (let i = 0; i < resolvedParts.length; i++) {
+      const curr = resolvedParts[i];
+      if (curr.type !== 'arrow') continue;
+      const prev = i > 0 ? resolvedParts[i - 1] : null;
+      const next = i < resolvedParts.length - 1 ? resolvedParts[i + 1] : null;
+      if (!prev || prev.type !== 'task' || !next || next.type !== 'task') continue;
 
-  // Find task by its content/name
-  findTaskByContent(content, expectedType = null) {
-    // Normalize the content for searching
-    const normalized = this.parser.normalizeId(content);
-    
-    // Search through all tasks
-    for (const [taskId, task] of Object.entries(this.parser.tasks)) {
-      // Check if content matches task name
-      if (this.parser.normalizeId(task.name) === normalized) {
-        if (!expectedType || task.type === expectedType || 
-            (expectedType === 'task' && ['task', 'send', 'receive'].includes(task.type))) {
-          return taskId;
-        }
+      if (curr.value === '->') {
+        connections.push({ from: prev.value, to: next.value });
+      } else if (curr.value === '<-') {
+        connections.push({ from: next.value, to: prev.value });
       }
-      
-      // For message tasks, also check message name
-      if (task.messageName && this.parser.normalizeId(task.messageName) === normalized) {
+    }
+
+    return connections;
+  }
+
+  resolvePartToTaskId(part, lineNumber, contextLane = null) {
+    const originalLane = this.parser.currentLane;
+    if (contextLane) {
+      this.parser.currentLane = contextLane;
+    }
+
+    const tasksAtLine = this.getTasksCreatedAtLine(lineNumber);
+    const normalized = this.parser.normalizeId(part);
+
+    for (const taskId of tasksAtLine) {
+      const task = this.parser.tasks[taskId];
+      if (task && (this.parser.normalizeId(task.name) === normalized ||
+                  (task.messageName && this.parser.normalizeId(task.messageName) === normalized))) {
+        this.parser.currentLane = originalLane;
         return taskId;
       }
     }
-    
-    return null;
+
+    let resolved = this.parser.resolveTaskId(part, false);
+    if (!resolved && !this.parser.isSpecialLine(part)) {
+      resolved = this.parser.resolveTaskId(part, true);
+    }
+
+    this.parser.currentLane = originalLane;
+    return resolved;
   }
 
-  // Create implicit sequential connections
-  createImplicitConnections() {
-    console.log('Creating implicit sequential connections...');
-    let implicitCount = 0;
-    
-    for (let i = 1; i < this.globalTaskOrder.length; i++) {
-      const prevTask = this.globalTaskOrder[i - 1];
-      const currTask = this.globalTaskOrder[i];
-      
-      // Check if there's a connection break between these tasks
-      if (this.hasConnectionBreakBetween(prevTask.lineNumber, currTask.lineNumber)) {
-        console.log(`Connection break between ${prevTask.id} and ${currTask.id}`);
-        continue;
-      }
-      
-      // Create implicit connection
-      this.addConnection('flow', prevTask.id, currTask.id);
-      implicitCount++;
-    }
-    
-    console.log(`Created ${implicitCount} implicit connections`);
-  }
-
-  // Process all explicit arrow connections
-  processExplicitConnections() {
-    console.log('Processing explicit arrow connections...');
-    let explicitCount = 0;
-    
-    for (const explicit of this.explicitConnections) {
-      const sourceId = explicit.sourceId;
-      
-      for (const conn of explicit.connections) {
-        // Resolve target
-        const targetId = this.resolveTaskReference(conn.target);
-        
-        if (targetId) {
-          this.addConnection('flow', sourceId, targetId);
-          explicitCount++;
-          console.log(`Explicit: ${sourceId} -> ${targetId}`);
-        } else {
-          console.warn(`Could not resolve target: ${conn.target}`);
-        }
-      }
-    }
-    
-    console.log(`Created ${explicitCount} explicit connections`);
-  }
-
-  // Resolve task reference (with FQN support)
-  resolveTaskReference(reference) {
-    if (!reference) return null;
-    
-    reference = reference.trim();
-    
-    // Direct lookup in task scope
-    if (this.parser.taskScope[reference]) {
-      return this.parser.taskScope[reference];
-    }
-    
-    // Check if it's FQN
-    if (reference.includes('.') || reference.includes('@')) {
-      // Try to parse as FQN
-      let lane, task;
-      
-      if (reference.startsWith('@')) {
-        [lane, task] = reference.substring(1).split('.');
-      } else if (reference.includes('.')) {
-        [lane, task] = reference.split('.');
-      }
-      
-      if (lane && task) {
-        // Try various combinations
-        const laneNorm = this.parser.normalizeId(lane);
-        const taskNorm = this.parser.normalizeId(task);
-        
-        const candidates = [
-          `${laneNorm}_${taskNorm}`,
-          this.parser.taskScope[`${lane}.${task}`],
-          this.parser.taskScope[`@${lane}.${task}`],
-          this.parser.taskScope[`${laneNorm}.${taskNorm}`]
-        ];
-        
-        for (const candidate of candidates) {
-          if (candidate && this.parser.tasks[candidate]) {
-            return candidate;
-          }
-        }
-      }
-    }
-    
-    // Search by content
-    return this.findTaskByContent(reference);
-  }
-
-  // Connect matching send/receive pairs
   connectMessageFlows() {
-    console.log('Connecting message flows...');
-    let messageCount = 0;
-    
-    const sendTasks = Object.values(this.parser.tasks).filter(t => t.type === 'send');
-    const receiveTasks = Object.values(this.parser.tasks).filter(t => t.type === 'receive');
-    
-    for (const send of sendTasks) {
-      const messageName = send.messageName;
-      if (!messageName) continue;
-      
-      // Find matching receive
-      const receive = receiveTasks.find(r => r.messageName === messageName);
-      
-      if (receive) {
-        // Check for connection break
-        const sendLine = this.parser.taskLineNumbers[send.id];
-        const receiveLine = this.parser.taskLineNumbers[receive.id];
-        
-        if (!this.hasConnectionBreakBetween(sendLine, receiveLine)) {
-          this.addConnection('message', send.id, receive.id, messageName);
-          messageCount++;
+    const sendTasks = Object.values(this.parser.tasks).filter(task => task.type === 'send');
+    const receiveTasks = Object.values(this.parser.tasks).filter(task => task.type === 'receive');
+
+    sendTasks.forEach(sendTask => {
+      const messageName = sendTask.messageName;
+      if (!messageName) return;
+
+      const matchingReceive = receiveTasks.find(receiveTask =>
+        receiveTask.messageName === messageName
+      );
+
+      if (matchingReceive) {
+        const hasBreak = this.parser.hasConnectionBreakBetween(
+          this.parser.taskLineNumbers[sendTask.id],
+          this.parser.taskLineNumbers[matchingReceive.id]
+        );
+
+        if (!hasBreak) {
+          const messageId = `message_${this.parser.normalizeId(messageName)}`;
+          if (!this.parser.messages.find(m => m.id === messageId)) {
+            this.parser.messages.push({
+              type: 'message',
+              name: messageName,
+              id: messageId,
+              sourceRef: sendTask.id,
+              targetRef: matchingReceive.id
+            });
+          }
+          this.parser.addConnection('message', sendTask.id, matchingReceive.id, messageName);
         }
       }
-    }
-    
-    console.log(`Created ${messageCount} message flows`);
+    });
   }
 
-  // Handle special connections (gateways, events)
-  handleSpecialConnections() {
-    console.log('Handling special connections...');
-    
-    // Connect gateways to their branches
+  handleSpecialConnections(globalTaskOrder) {
     Object.values(this.parser.tasks).forEach(task => {
       if (task.type === 'gateway' && task.branches) {
         task.branches.forEach(branchId => {
-          this.addConnection('flow', task.id, branchId);
+          this.parser.addConnection('flow', task.id, branchId);
         });
+
+        const gatewayIndex = globalTaskOrder.findIndex(t => t.id === task.id);
+        let mergePoint = null;
+
+        for (let i = gatewayIndex + 1; i < globalTaskOrder.length; i++) {
+          const candidate = globalTaskOrder[i];
+          const candidateTask = this.parser.tasks[candidate.id];
+          if (candidateTask && candidateTask.type !== 'branch') {
+            mergePoint = candidate.id;
+            break;
+          }
+        }
+
+        if (mergePoint) {
+          task.branches.forEach(branchId => {
+            const hasTerminalOutgoing = this.parser.connections.some(conn =>
+              conn.type === 'sequenceFlow' &&
+              conn.sourceRef === branchId &&
+              conn.targetRef === 'process_end'
+            );
+            if (!hasTerminalOutgoing) {
+              this.parser.addConnection('flow', branchId, mergePoint);
+            }
+          });
+        }
       }
     });
-    
-    // Connect branches to their merge point
-    // Branches should connect to the next task after all branches
-    const gateways = Object.values(this.parser.tasks).filter(t => t.type === 'gateway');
-    
-    for (const gateway of gateways) {
-      if (!gateway.branches || gateway.branches.length === 0) continue;
-      
-      // Find the task that should receive connections from all branches
-      const gatewayIndex = this.globalTaskOrder.findIndex(t => t.id === gateway.id);
-      
-      // Look for the next task after all branches
-      let mergeTaskId = null;
-      for (let i = gatewayIndex + 1; i < this.globalTaskOrder.length; i++) {
-        const candidate = this.globalTaskOrder[i];
-        const candidateTask = this.parser.tasks[candidate.id];
-        
-        // Skip if it's a branch of this gateway
-        if (candidateTask.type === 'branch' && gateway.branches.includes(candidate.id)) {
-          continue;
-        }
-        
-        // Found the merge point
-        mergeTaskId = candidate.id;
-        break;
-      }
-      
-      // Connect all branches to the merge point
-      if (mergeTaskId) {
-        gateway.branches.forEach(branchId => {
-          // Only add if branch doesn't have explicit connection
-          const hasExplicit = this.explicitConnections.some(e => 
-            e.sourceId === branchId && e.connections.length > 0
-          );
-          
-          if (!hasExplicit) {
-            this.addConnection('flow', branchId, mergeTaskId);
-          }
-        });
+
+    if (this.parser.tasks['process_start'] && globalTaskOrder.length > 0) {
+      const firstNonStartTask = globalTaskOrder.find(task => task.id !== 'process_start');
+      if (firstNonStartTask) {
+        this.parser.addConnection('flow', 'process_start', firstNonStartTask.id);
       }
     }
-    
-    // Handle Start/End events
-    const startEvent = this.parser.tasks['process_start'];
-    const endEvent = this.parser.tasks['process_end'];
-    
-    if (startEvent && this.globalTaskOrder.length > 0) {
-      // Connect start to first task
-      const firstTask = this.globalTaskOrder[0];
-      this.addConnection('flow', 'process_start', firstTask.id);
-    }
-    
-    if (endEvent) {
-      // Find tasks that should connect to end
-      const tasksWithNoOutgoing = this.globalTaskOrder.filter(task => {
-        const hasOutgoing = this.parser.connections.some(conn => 
+
+    if (this.parser.tasks['process_end']) {
+      globalTaskOrder.forEach(task => {
+        if (task.id === 'process_end') return;
+        const hasOutgoing = this.parser.connections.some(conn =>
           conn.sourceRef === task.id && conn.type === 'sequenceFlow'
         );
-        return !hasOutgoing;
-      });
-      
-      // Connect them to end event
-      tasksWithNoOutgoing.forEach(task => {
-        this.addConnection('flow', task.id, 'process_end');
+        if (!hasOutgoing) {
+          this.parser.addConnection('flow', task.id, 'process_end');
+        }
       });
     }
-  }
-
-  // Add connection with deduplication
-  addConnection(type, sourceId, targetId, name = '') {
-    // Check if connection already exists
-    const exists = this.parser.connections.some(conn =>
-      conn.sourceRef === sourceId && 
-      conn.targetRef === targetId && 
-      conn.type === (type === 'flow' ? 'sequenceFlow' : type === 'message' ? 'messageFlow' : 'dataAssociation')
-    );
-    
-    if (!exists) {
-      this.parser.addConnection(type, sourceId, targetId, name);
-    }
-  }
-
-  // Check for connection breaks
-  hasConnectionBreakBetween(line1, line2) {
-    if (line1 === undefined || line2 === undefined) return false;
-    
-    const minLine = Math.min(line1, line2);
-    const maxLine = Math.max(line1, line2);
-    
-    return this.parser.connectionBreaks.some(breakLine => 
-      breakLine > minLine && breakLine < maxLine
-    );
   }
 }
 
-// Export for use
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = ConnectivityEngine;
 } else {
