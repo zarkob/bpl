@@ -56,6 +56,7 @@ Switch between:
 - **Message Flows**: Automatic connection between send/receive tasks
 - **Cross-Lane Flows**: Automatic sequential task connectivity with break detection
 - **Data Objects**: Attach data to any process step
+- **Deterministic Rule Spec**: See [`CONNECTIVITY_RULES.md`](./CONNECTIVITY_RULES.md)
 
 ### 🖱️ **Interactive Diagram Controls** (NEW!)
 - **Zoom & Pan**: Mouse wheel to zoom, drag to pan
@@ -88,6 +89,13 @@ npm run start:web
 ```
 
 Open http://localhost:8080 and start creating!
+
+### Connectivity Contract
+
+Connectivity behavior is defined by [`CONNECTIVITY_RULES.md`](./CONNECTIVITY_RULES.md) and enforced by:
+
+- `npm run test:connectivity`
+- `npm run test:regression`
 
 ### Option 2: Desktop Application
 
