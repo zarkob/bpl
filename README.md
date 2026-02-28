@@ -589,7 +589,7 @@ task A // This is also hidden
   {Process Order
     =update inventory
     =generate invoice
-    =[prepare shipment]+
+    =prepare shipment
   }Order Processing Complete
   !send Order Confirmation
   $Order Database
