@@ -47,15 +47,15 @@ const testCases = [
   !End`,
     expectedConnections: [
       // Sequential within Customer lane
-      { from: "customer_place_order", to: "customer_send__payment", type: "sequenceFlow" },
-      { from: "customer_send__payment", to: "customer_confirmation_1", type: "sequenceFlow" },
+      { from: "customer_place_order", to: "customer_send_payment", type: "sequenceFlow" },
+      { from: "customer_send_payment", to: "customer_confirmation_1", type: "sequenceFlow" },
       // Cross-lane sequential
-      { from: "customer_confirmation_1", to: "system_receive__payment", type: "sequenceFlow" },
+      { from: "customer_confirmation_1", to: "system_receive_payment", type: "sequenceFlow" },
       // Sequential within System lane
-      { from: "system_receive__payment", to: "system_payment_valid_", type: "sequenceFlow" },
+      { from: "system_receive_payment", to: "system_payment_valid", type: "sequenceFlow" },
       // Gateway connections
-      { from: "system_payment_valid_", to: "system_ship_order", type: "sequenceFlow" },
-      { from: "system_payment_valid_", to: "system_cancel_order", type: "sequenceFlow" },
+      { from: "system_payment_valid", to: "system_ship_order", type: "sequenceFlow" },
+      { from: "system_payment_valid", to: "system_cancel_order", type: "sequenceFlow" },
       // Branch merges
       { from: "system_ship_order", to: "system_confirmation_2", type: "sequenceFlow" },
       { from: "system_cancel_order", to: "system_confirmation_2", type: "sequenceFlow" },
@@ -63,7 +63,7 @@ const testCases = [
       { from: "system_confirmation_2", to: "customer_xoxox", type: "sequenceFlow" },
       { from: "customer_xoxox", to: "process_end", type: "sequenceFlow" },
       // Message flow
-      { from: "customer_send__payment", to: "system_receive__payment", type: "messageFlow" }
+      { from: "customer_send_payment", to: "system_receive_payment", type: "messageFlow" }
     ]
   },
   
