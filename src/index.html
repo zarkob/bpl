@@ -250,6 +250,7 @@
         this.gatewayStack = [];
         this.connectionBreaks = []; // Track line numbers where "---" appears
         this.taskLineNumbers = {}; // Track line numbers for each task
+        this.pendingDataAssociations = [];
       }
 
       parse(text) {
@@ -268,6 +269,7 @@
         this.gatewayStack = [];
         this.connectionBreaks = [];
         this.taskLineNumbers = {};
+        this.pendingDataAssociations = [];
         this.originalText = text;
         this.currentLineIndex = 0;
         this.endEventLane = null;
@@ -423,10 +425,17 @@
             taskId = this.parseDataObject(line);
             break;
           case '{': // Gateway Start
-            if (line.includes('?')) {
-              taskId = this.parseGateway(line.replace('{', ''));
-            } else {
-              taskId = this.parseTask(line.replace('{', ''));
+            {
+              const gatewayBody = line.substring(1).trim();
+              let gatewayType = 'exclusive';
+              if (gatewayBody.startsWith('?')) {
+                gatewayType = 'exclusive';
+              } else if (gatewayBody.startsWith('=')) {
+                gatewayType = 'parallel';
+              } else if (gatewayBody.startsWith('~')) {
+                gatewayType = 'inclusive';
+              }
+              taskId = this.parseGateway(gatewayBody, gatewayType);
             }
             break;
           case '}': // Gateway End
@@ -440,8 +449,10 @@
           case '?': // Gateway
             taskId = this.parseGateway(line);
             break;
-          case '+': // Positive branch
-          case '-': // Negative branch
+          case '+': // XOR positive branch
+          case '-': // XOR negative branch
+          case '=': // AND branch
+          case '~': // OR branch
             taskId = this.parseGatewayBranch(line, firstChar);
             break;
           case '"': // Comment
@@ -613,20 +624,39 @@
         return taskId;
       }
 
-      parseGateway(line) {
+      parseGateway(line, gatewayType = 'exclusive') {
         if (!this.currentLane) {
           // Create a default lane if needed
           this.parseLane('@Default');
         }
         
-        const gatewayName = line.replace('{', '').replace('?', '').trim();
+        const cleanedLine = line.replace('{', '').trim();
+        let inferredGatewayType = gatewayType;
+        let gatewayName = cleanedLine;
+        
+        if (cleanedLine.startsWith('?')) {
+          inferredGatewayType = 'exclusive';
+          gatewayName = cleanedLine.substring(1).trim();
+        } else if (cleanedLine.startsWith('=')) {
+          inferredGatewayType = 'parallel';
+          gatewayName = cleanedLine.substring(1).trim();
+        } else if (cleanedLine.startsWith('~')) {
+          inferredGatewayType = 'inclusive';
+          gatewayName = cleanedLine.substring(1).trim();
+        }
+        
+        if (!gatewayName) {
+          gatewayName = inferredGatewayType === 'parallel' ? 'Parallel Gateway' :
+                        inferredGatewayType === 'inclusive' ? 'Inclusive Gateway' :
+                        'Decision';
+        }
         const laneName = this.currentLane.replace('@', '');
         const normalizedLaneName = this.normalizeId(laneName);
         const gatewayId = `${normalizedLaneName}_${this.normalizeId(gatewayName)}`;
         
         this.tasks[gatewayId] = {
           type: 'gateway',
-          gatewayType: 'exclusive',
+          gatewayType: inferredGatewayType,
           name: gatewayName,
           id: gatewayId,
           lane: laneName,
@@ -654,9 +684,26 @@
         }
         
         const parentGateway = this.gatewayStack[this.gatewayStack.length - 1];
+        const parentGatewayTask = this.tasks[parentGateway];
         let branchName = line.trim().substring(1).trim();
         const laneName = this.currentLane.replace('@', '');
         const normalizedLaneName = this.normalizeId(laneName);
+        const branchTypeMap = {
+          '+': 'positive',
+          '-': 'negative',
+          '=': 'parallel',
+          '~': 'inclusive'
+        };
+        const branchType = branchTypeMap[branchChar] || 'positive';
+        
+        // Infer gateway type from branch prefixes for shorthand blocks such as "{Process ...".
+        if (parentGatewayTask) {
+          if (branchChar === '=') {
+            parentGatewayTask.gatewayType = 'parallel';
+          } else if (branchChar === '~') {
+            parentGatewayTask.gatewayType = 'inclusive';
+          }
+        }
         
         // Check if branch contains arrow operators (e.g., "cancel order -> !End")
         // If so, only use the first part as the branch name
@@ -689,7 +736,7 @@
           }
           
           // Connect gateway to end event directly with appropriate label
-          const branchLabel = branchChar === '+' ? 'Yes' : 'No';
+          const branchLabel = branchChar === '+' ? 'Yes' : (branchChar === '-' ? 'No' : '');
           this.addConnection('flow', parentGateway, endEventId, branchLabel);
           
           return endEventId;
@@ -699,7 +746,7 @@
         
         // Check if this is a special format branch with custom label
         let displayName = branchName;
-        let branchLabel = branchChar === '+' ? 'Yes' : 'No';
+        let branchLabel = branchChar === '+' ? 'Yes' : (branchChar === '-' ? 'No' : '');
         
         // Check for custom label format |Label|content
         if (branchName.startsWith('|') && branchName.includes('|', 1)) {
@@ -715,7 +762,7 @@
         
         this.tasks[branchId] = {
           type: 'branch',
-          branchType: branchChar === '+' ? 'positive' : 'negative',
+          branchType: branchType,
           name: displayName,
           label: branchLabel,
           id: branchId,
@@ -901,7 +948,9 @@
               this.addConnection('data', dataObjId, taskId);
               console.log(`Added data association from ${dataObjId} to ${taskId}`);
             } else {
-              console.log(`Failed to resolve task ID for data object association: "${taskRef}"`);
+              // Defer resolution for forward references.
+              this.pendingDataAssociations.push({ dataObjId, taskRef });
+              console.log(`Deferred data association for "${taskRef}" from ${dataObjId}`);
             }
           }
           
@@ -922,6 +971,26 @@
           name: name,
           sourceRef: sourceId,
           targetRef: targetId
+        });
+      }
+
+      resolvePendingDataAssociations() {
+        this.pendingDataAssociations.forEach(({ dataObjId, taskRef }) => {
+          const taskId = this.resolveTaskId(taskRef, false);
+          if (!taskId) {
+            return;
+          }
+          
+          const exists = this.connections.some(conn =>
+            conn.type === 'dataAssociation' &&
+            conn.sourceRef === dataObjId &&
+            conn.targetRef === taskId
+          );
+          
+          if (!exists) {
+            this.addConnection('data', dataObjId, taskId);
+            console.log(`Resolved deferred data association from ${dataObjId} to ${taskId}`);
+          }
         });
       }
 
@@ -964,6 +1033,9 @@
         
         // Phase 5: Handle special connections (gateways, events)
         this.handleSpecialConnections(globalTaskOrder);
+        
+        // Phase 6: Resolve deferred data associations
+        this.resolvePendingDataAssociations();
         
         console.log(`Total connections: ${this.connections.length}`);
       }
@@ -1026,10 +1098,16 @@
         for (let i = 1; i < globalTaskOrder.length; i++) {
           const prev = globalTaskOrder[i - 1];
           const curr = globalTaskOrder[i];
+          const prevTask = this.tasks[prev.id];
           
           // Check for connection break
           if (this.hasConnectionBreakBetween(prev.lineNumber, curr.lineNumber)) {
             console.log(`Break between ${prev.id} and ${curr.id}`);
+            continue;
+          }
+          
+          // Gateways branch out via explicit gateway handling; avoid bypassing them.
+          if (prevTask && prevTask.type === 'gateway') {
             continue;
           }
           
@@ -1194,12 +1272,18 @@
             // Connect branches to merge point (unless they have explicit connections)
             if (mergePoint) {
               task.branches.forEach(branchId => {
+                const branch = this.tasks[branchId];
+                if (!branch) return;
+                
                 // Check if branch already has outgoing connections
                 const hasOutgoing = this.connections.some(conn => 
                   conn.sourceRef === branchId && conn.type === 'sequenceFlow'
                 );
                 
-                if (!hasOutgoing) {
+                // Negative XOR branches are dead ends unless explicitly connected.
+                const shouldAutoConnect = branch.branchType !== 'negative';
+                
+                if (!hasOutgoing && shouldAutoConnect) {
                   this.addConnection('flow', branchId, mergePoint);
                 }
               });
@@ -1238,6 +1322,8 @@
             gatewayBranchesMap[task.id] = {
               positive: [],
               negative: [],
+              parallel: [],
+              inclusive: [],
               nextTask: null,
               taskBeforeGateway: null
             };
@@ -1249,8 +1335,12 @@
           if (task.type === 'branch' && task.parentGateway && gatewayBranchesMap[task.parentGateway]) {
             if (task.branchType === 'positive') {
               gatewayBranchesMap[task.parentGateway].positive.push(task.id);
-            } else {
+            } else if (task.branchType === 'negative') {
               gatewayBranchesMap[task.parentGateway].negative.push(task.id);
+            } else if (task.branchType === 'parallel') {
+              gatewayBranchesMap[task.parentGateway].parallel.push(task.id);
+            } else if (task.branchType === 'inclusive') {
+              gatewayBranchesMap[task.parentGateway].inclusive.push(task.id);
             }
           }
         });
@@ -1382,11 +1472,19 @@
             this.addConnection('flow', gatewayId, branchId);
           });
           
-          // Connect positive branches to the next task after the gateway
-          data.positive.forEach(branchId => {
-            const branch = this.tasks[branchId];
+          // Auto-connect branches to the next task after the gateway.
+          // XOR: positive branches
+          // AND: parallel branches
+          // OR: inclusive branches
+          const autoConnectBranches = [
+            ...data.positive,
+            ...data.parallel,
+            ...data.inclusive
+          ];
+          
+          autoConnectBranches.forEach(branchId => {
             
-            // Always connect positive branches to the next task if available
+            // Always connect auto-connecting branches to the next task if available
             if (data.nextTask) {
               this.addConnection('flow', branchId, data.nextTask);
             } else {
@@ -1843,7 +1941,11 @@
   classDef gateway fill:#fcc,stroke:#f00,stroke-width:2px
   classDef comment fill:#ffd,stroke:#bb0,stroke-width:1px
   classDef dataObject fill:#ececff,stroke:#9370db,stroke-width:1px
-  classDef branch fill:#d5ffd5,stroke:#3cb371,stroke-width:1px
+  classDef branch fill:#f3f6ff,stroke:#6b7280,stroke-width:1px
+  classDef branchPositive fill:#d5ffd5,stroke:#3cb371,stroke-width:2px
+  classDef branchNegative fill:#ffd5d5,stroke:#dc2626,stroke-width:2px
+  classDef branchParallel fill:#dbeafe,stroke:#2563eb,stroke-width:2px
+  classDef branchInclusive fill:#ffedd5,stroke:#ea580c,stroke-width:2px
 `;
 
         // Add process-level events (Start/End) outside of any subgraph
@@ -1901,10 +2003,32 @@
                   mermaid += `    ${task.id}>"${escapedName}"]:::message\n`;
                   break;
                 case 'gateway':
-                  mermaid += `    ${task.id}{"${escapedName}?"}:::gateway\n`;
+                  {
+                    let gatewayLabel = escapedName;
+                    if (task.gatewayType === 'exclusive') {
+                      gatewayLabel += '?';
+                    } else if (task.gatewayType === 'parallel') {
+                      gatewayLabel += ' (AND)';
+                    } else if (task.gatewayType === 'inclusive') {
+                      gatewayLabel += ' (OR)';
+                    }
+                    mermaid += `    ${task.id}{"${gatewayLabel}"}:::gateway\n`;
+                  }
                   break;
                 case 'branch':
-                  mermaid += `    ${task.id}["${escapedName}"]:::branch\n`;
+                  {
+                    let branchClass = 'branch';
+                    if (task.branchType === 'positive') {
+                      branchClass = 'branchPositive';
+                    } else if (task.branchType === 'negative') {
+                      branchClass = 'branchNegative';
+                    } else if (task.branchType === 'parallel') {
+                      branchClass = 'branchParallel';
+                    } else if (task.branchType === 'inclusive') {
+                      branchClass = 'branchInclusive';
+                    }
+                    mermaid += `    ${task.id}["${escapedName}"]:::${branchClass}\n`;
+                  }
                   break;
                 case 'comment':
                   mermaid += `    ${task.id}["/${escapedName}/"]:::comment\n`;
@@ -1946,12 +2070,20 @@
               if (source.type === 'gateway' && target.type === 'branch') {
                 // Special formatting for gateway branches with labels
                 const escapedLabel = (target.label || '').replace(/"/g, '&quot;').replace(/\[/g, '&lsqb;').replace(/\]/g, '&rsqb;');
-                mermaid += `  ${conn.sourceRef} -->|"${escapedLabel}"| ${conn.targetRef}\n`;
+                if (escapedLabel) {
+                  mermaid += `  ${conn.sourceRef} -->|"${escapedLabel}"| ${conn.targetRef}\n`;
+                } else {
+                  mermaid += `  ${conn.sourceRef} --> ${conn.targetRef}\n`;
+                }
               } else if (source.type === 'gateway' && target.type === 'event' && target.eventType === 'end') {
                 // Gateway to End event with label (from branch)
-                const label = conn.name || 'Yes'; // Default to 'Yes' if no label specified
+                const label = conn.name || '';
                 const escapedLabel = label.replace(/"/g, '&quot;').replace(/\[/g, '&lsqb;').replace(/\]/g, '&rsqb;');
-                mermaid += `  ${conn.sourceRef} -->|"${escapedLabel}"| ${conn.targetRef}\n`;
+                if (escapedLabel) {
+                  mermaid += `  ${conn.sourceRef} -->|"${escapedLabel}"| ${conn.targetRef}\n`;
+                } else {
+                  mermaid += `  ${conn.sourceRef} --> ${conn.targetRef}\n`;
+                }
               } else {
                 mermaid += `  ${conn.sourceRef} --> ${conn.targetRef}\n`;
               }

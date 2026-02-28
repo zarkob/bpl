@@ -50,7 +50,7 @@ Switch between:
 - 📜 **Mermaid Code** - Export-ready diagram syntax
 
 ### 🔀 **Smart Connectivity**
-- **Gateway Support**: XOR decisions with custom branch labels
+- **Gateway Support**: XOR, AND, and OR gateways with custom branch labels
 - **End Event Normalization**: Smart handling of `!End`, `+!End`, `-!End` variations
 - **Auto-Connection Breaks**: Intelligent flow termination to prevent cross-lane leakage
 - **Message Flows**: Automatic connection between send/receive tasks
@@ -498,9 +498,9 @@ Tasks with `!send` and `!receive` events are automatically connected:
 #### Data Objects
 
 ```
-#Order Data
-#Customer Info -> process order
-#Invoice <- generate invoice
+#OrderData
+#CustomerInfo process order
+#Invoice generate invoice
 ```
 
 #### Data Stores (Persistent)
@@ -578,7 +578,7 @@ task A // This is also hidden
 
 @OrderSystem  
   !receive Order Submission
-  #Order Data
+  #OrderData validate order
   validate order
   process payment
   {?Payment successful
@@ -1721,7 +1721,6 @@ npm run dist:all
 
 ## 🐛 Known Limitations
 
-- XOR gateways only (AND/OR coming soon)
 - Excel export requires Python
 - BPMN 2.0 export in development
 
