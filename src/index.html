@@ -962,13 +962,25 @@
       }
 
       addConnection(type, sourceId, targetId, name = '') {
+        const normalizedType = type === 'flow' ? 'sequenceFlow' : 
+                              type === 'message' ? 'messageFlow' : 'dataAssociation';
+        const connectionName = name || '';
+        const existing = this.connections.some(conn =>
+          conn.type === normalizedType &&
+          conn.sourceRef === sourceId &&
+          conn.targetRef === targetId &&
+          (conn.name || '') === connectionName
+        );
+        if (existing) {
+          return;
+        }
+        
         const connId = `conn_${this.normalizeId(sourceId)}_${this.normalizeId(targetId)}`;
         
         this.connections.push({
-          type: type === 'flow' ? 'sequenceFlow' : 
-                type === 'message' ? 'messageFlow' : 'dataAssociation',
+          type: normalizedType,
           id: connId,
-          name: name,
+          name: connectionName,
           sourceRef: sourceId,
           targetRef: targetId
         });
@@ -1293,12 +1305,18 @@
         
         // Handle Start/End events
         if (this.tasks['process_start'] && globalTaskOrder.length > 0) {
-          this.addConnection('flow', 'process_start', globalTaskOrder[0].id);
+          const firstNonStartTask = globalTaskOrder.find(task => task.id !== 'process_start');
+          if (firstNonStartTask) {
+            this.addConnection('flow', 'process_start', firstNonStartTask.id);
+          }
         }
         
         if (this.tasks['process_end']) {
           // Find tasks with no outgoing connections
           globalTaskOrder.forEach(task => {
+            if (task.id === 'process_end') {
+              return;
+            }
             const hasOutgoing = this.connections.some(conn => 
               conn.sourceRef === task.id && conn.type === 'sequenceFlow'
             );
