@@ -1760,10 +1760,12 @@
         });
         
         // Add subgraphs for each lane
+        const renderedSubgraphs = [];
         Object.entries(laneNodes).forEach(([laneName, taskIds], index) => {
           if (taskIds.length > 0) {
             // Use sg prefix to ensure valid subgraph names
             const sgName = `sg${index}`;
+            renderedSubgraphs.push(sgName);
             // Use the original lane name for display
             const displayName = laneDisplayNames[laneName] || laneName;
             mermaid += `  subgraph ${sgName}["${displayName}"]\n`;
@@ -1829,8 +1831,7 @@
         // This is handled in the lane subgraph code already
         
         // Add lane styles
-        Object.keys(laneNodes).forEach((laneName, index) => {
-          const sgName = `sg${index}`;
+        renderedSubgraphs.forEach((sgName, index) => {
           const color = index % 2 === 0 ? 
             'fill:#f9f9f9,stroke:#333,stroke-width:1px' : 
             'fill:#e6f3ff,stroke:#333,stroke-width:1px';
