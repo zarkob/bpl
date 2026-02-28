@@ -24,6 +24,11 @@ if (!fs.existsSync(path.join('dist', 'samples'))) {
   fs.mkdirSync(path.join('dist', 'samples'));
 }
 
+// Create shared directory in dist
+if (!fs.existsSync(path.join('dist', 'shared'))) {
+  fs.mkdirSync(path.join('dist', 'shared'));
+}
+
 // Copy HTML file to dist
 console.log('Copying HTML file to dist...');
 fs.copyFileSync(
@@ -53,6 +58,21 @@ if (fs.existsSync(path.join(__dirname, 'samples', 'order_process.bpl'))) {
   fs.copyFileSync(
     path.join(__dirname, 'samples', 'order_process.bpl'),
     path.join(__dirname, 'dist', 'samples', 'order_process.bpl')
+  );
+}
+
+// Copy browser runtime helper files used by index.html
+if (fs.existsSync(path.join(__dirname, 'shared', 'connectivity-engine.js'))) {
+  fs.copyFileSync(
+    path.join(__dirname, 'shared', 'connectivity-engine.js'),
+    path.join(__dirname, 'dist', 'shared', 'connectivity-engine.js')
+  );
+}
+
+if (fs.existsSync(path.join(__dirname, 'test-connectivity.js'))) {
+  fs.copyFileSync(
+    path.join(__dirname, 'test-connectivity.js'),
+    path.join(__dirname, 'dist', 'test-connectivity.js')
   );
 }
 

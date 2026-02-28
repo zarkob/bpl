@@ -4,12 +4,13 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline'; connect-src 'self';">
+  <link rel="icon" href="data:,">
   <title>BPMN-lite Parser Demo</title>
   <!-- Import Mermaid library -->
   <script src="https://cdn.jsdelivr.net/npm/mermaid@10.6.1/dist/mermaid.min.js"></script>
   <!-- Import connectivity engine and tests -->
-  <script src="../shared/connectivity-engine.js"></script>
-  <script src="../test-connectivity.js"></script>
+  <script src="./shared/connectivity-engine.js"></script>
+  <script src="./test-connectivity.js"></script>
   <style>
     body {
       font-family: Arial, sans-serif;
@@ -2205,6 +2206,10 @@
     // Run tests after page loads
     window.addEventListener('load', () => {
       console.log("%c BPMN-lite Parser Demo v2.1.0 (Connectivity Update) LOADED", "background: green; color: white; font-size: 20px");
+      const debugTestsEnabled = new URLSearchParams(window.location.search).get('debugTests') === '1';
+      if (!debugTestsEnabled) {
+        return;
+      }
       
       // Run gateway tests
       const gatewayResults = runGatewayTests();
