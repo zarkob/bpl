@@ -422,6 +422,21 @@
           case '#': // Data object
             taskId = this.parseDataObject(line);
             break;
+          case '{': // Gateway Start
+            if (line.includes('?')) {
+              taskId = this.parseGateway(line.replace('{', ''));
+            } else {
+              taskId = this.parseTask(line.replace('{', ''));
+            }
+            break;
+          case '}': // Gateway End
+            this.gatewayStack.pop();
+            // If there's text after }, treat it as a task that follows
+            const afterBrace = line.substring(1).trim();
+            if (afterBrace) {
+              taskId = this.processLinePart(afterBrace, afterBrace.charAt(0), lineNumber);
+            }
+            break;
           case '?': // Gateway
             taskId = this.parseGateway(line);
             break;
@@ -604,7 +619,7 @@
           this.parseLane('@Default');
         }
         
-        const gatewayName = line.substring(1).trim();
+        const gatewayName = line.replace('{', '').replace('?', '').trim();
         const laneName = this.currentLane.replace('@', '');
         const normalizedLaneName = this.normalizeId(laneName);
         const gatewayId = `${normalizedLaneName}_${this.normalizeId(gatewayName)}`;
@@ -639,7 +654,7 @@
         }
         
         const parentGateway = this.gatewayStack[this.gatewayStack.length - 1];
-        let branchName = line.substring(1).trim();
+        let branchName = line.trim().substring(1).trim();
         const laneName = this.currentLane.replace('@', '');
         const normalizedLaneName = this.normalizeId(laneName);
         
@@ -689,6 +704,11 @@
         // Check for custom label format |Label|content
         if (branchName.startsWith('|') && branchName.includes('|', 1)) {
           const labelEnd = branchName.indexOf('|', 1);
+          branchLabel = branchName.substring(1, labelEnd);
+          displayName = branchName.substring(labelEnd + 1).trim();
+        } else if (branchName.startsWith('"') && branchName.includes('"', 1)) {
+          // Support "Label" content format (common in examples)
+          const labelEnd = branchName.indexOf('"', 1);
           branchLabel = branchName.substring(1, labelEnd);
           displayName = branchName.substring(labelEnd + 1).trim();
         }
@@ -1829,13 +1849,15 @@
         // Add process-level events (Start/End) outside of any subgraph
         Object.values(this.tasks).forEach(task => {
           if (task.type === 'event' && (task.eventType === 'start' || task.eventType === 'end') && task.lane === null) {
-            mermaid += `  ${task.id}([${task.name}]):::event\n`;
+            const escapedName = task.name.replace(/"/g, '&quot;').replace(/\[/g, '&lsqb;').replace(/\]/g, '&rsqb;');
+            mermaid += `  ${task.id}(["${escapedName}"]):::event\n`;
           }
         });
 
         // Add data objects
         this.dataObjects.forEach(dataObj => {
-          mermaid += `  ${dataObj.id}[(${dataObj.name})]:::dataObject\n`;
+          const escapedName = dataObj.name.replace(/"/g, '&quot;').replace(/\[/g, '&lsqb;').replace(/\]/g, '&rsqb;');
+          mermaid += `  ${dataObj.id}[("${escapedName}")]:::dataObject\n`;
         });
 
         // Group by lanes/pools
@@ -1868,25 +1890,27 @@
               
               if (!task) return;
               
+              const escapedName = task.name.replace(/"/g, '&quot;').replace(/\[/g, '&lsqb;').replace(/\]/g, '&rsqb;');
+              
               switch(task.type) {
                 case 'task':
-                  mermaid += `    ${task.id}[${task.name}]:::task\n`;
+                  mermaid += `    ${task.id}["${escapedName}"]:::task\n`;
                   break;
                 case 'send':
                 case 'receive':
-                  mermaid += `    ${task.id}>${task.name}]:::message\n`;
+                  mermaid += `    ${task.id}>"${escapedName}"]:::message\n`;
                   break;
                 case 'gateway':
-                  mermaid += `    ${task.id}{${task.name}?}:::gateway\n`;
+                  mermaid += `    ${task.id}{"${escapedName}?"}:::gateway\n`;
                   break;
                 case 'branch':
-                  mermaid += `    ${task.id}["${task.name}"]:::branch\n`;
+                  mermaid += `    ${task.id}["${escapedName}"]:::branch\n`;
                   break;
                 case 'comment':
-                  mermaid += `    ${task.id}[/${task.name}/]:::comment\n`;
+                  mermaid += `    ${task.id}["/${escapedName}/"]:::comment\n`;
                   break;
                 case 'event':
-                  mermaid += `    ${task.id}([${task.name}]):::event\n`;
+                  mermaid += `    ${task.id}(["${escapedName}"]):::event\n`;
                   break;
               }
             });
@@ -1921,11 +1945,13 @@
             if (source && target) {
               if (source.type === 'gateway' && target.type === 'branch') {
                 // Special formatting for gateway branches with labels
-                mermaid += `  ${conn.sourceRef} -->|${target.label}| ${conn.targetRef}\n`;
+                const escapedLabel = (target.label || '').replace(/"/g, '&quot;').replace(/\[/g, '&lsqb;').replace(/\]/g, '&rsqb;');
+                mermaid += `  ${conn.sourceRef} -->|"${escapedLabel}"| ${conn.targetRef}\n`;
               } else if (source.type === 'gateway' && target.type === 'event' && target.eventType === 'end') {
                 // Gateway to End event with label (from branch)
                 const label = conn.name || 'Yes'; // Default to 'Yes' if no label specified
-                mermaid += `  ${conn.sourceRef} -->|${label}| ${conn.targetRef}\n`;
+                const escapedLabel = label.replace(/"/g, '&quot;').replace(/\[/g, '&lsqb;').replace(/\]/g, '&rsqb;');
+                mermaid += `  ${conn.sourceRef} -->|"${escapedLabel}"| ${conn.targetRef}\n`;
               } else {
                 mermaid += `  ${conn.sourceRef} --> ${conn.targetRef}\n`;
               }
@@ -1937,8 +1963,9 @@
         mermaid += '  %% Message flows\n';
         this.connections.forEach(conn => {
           if (conn.type === 'messageFlow') {
-            const label = conn.name ? `|${conn.name}|` : '';
-            mermaid += `  ${conn.sourceRef} -.->${ label } ${conn.targetRef}\n`;
+            const escapedLabel = (conn.name || '').replace(/"/g, '&quot;').replace(/\[/g, '&lsqb;').replace(/\]/g, '&rsqb;');
+            const labelStr = escapedLabel ? `|"${escapedLabel}"|` : '';
+            mermaid += `  ${conn.sourceRef} -.->${ labelStr } ${conn.targetRef}\n`;
           }
         });
         

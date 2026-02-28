@@ -1,13 +1,4 @@
-/**
- * Shared BPL Parser Module
- * This is the single source of truth for the BPL parser logic
- * Used by both the web application and VS Code extension
- * 
- * IMPORTANT: This file is auto-generated from src/index.html
- * Do not edit directly - make changes in src/index.html and run npm run build-parser
- */
-
-class BpmnLiteParser {
+    class BpmnLiteParser {
       constructor() {
         this.processes = [];
         this.lanes = {};
@@ -122,8 +113,8 @@ class BpmnLiteParser {
         // Auto-inject connection breaks after End events
         this.injectConnectionBreaksAfterEndEvents(lines);
 
-        // Automatically connect sequential tasks
-        this.connectSequentialTasks();
+        // Automatically connect tasks using the new connectivity engine
+        this.connectTasks();
 
         // Build the AST
         const ast = {
@@ -194,6 +185,21 @@ class BpmnLiteParser {
             break;
           case '#': // Data object
             taskId = this.parseDataObject(line);
+            break;
+          case '{': // Gateway Start
+            if (line.includes('?')) {
+              taskId = this.parseGateway(line.replace('{', ''));
+            } else {
+              taskId = this.parseTask(line.replace('{', ''));
+            }
+            break;
+          case '}': // Gateway End
+            this.gatewayStack.pop();
+            // If there's text after }, treat it as a task that follows
+            const afterBrace = line.substring(1).trim();
+            if (afterBrace) {
+              taskId = this.processLinePart(afterBrace, afterBrace.charAt(0), lineNumber);
+            }
             break;
           case '?': // Gateway
             taskId = this.parseGateway(line);
@@ -377,7 +383,7 @@ class BpmnLiteParser {
           this.parseLane('@Default');
         }
         
-        const gatewayName = line.substring(1).trim();
+        const gatewayName = line.replace('{', '').replace('?', '').trim();
         const laneName = this.currentLane.replace('@', '');
         const normalizedLaneName = this.normalizeId(laneName);
         const gatewayId = `${normalizedLaneName}_${this.normalizeId(gatewayName)}`;
@@ -412,7 +418,7 @@ class BpmnLiteParser {
         }
         
         const parentGateway = this.gatewayStack[this.gatewayStack.length - 1];
-        let branchName = line.substring(1).trim();
+        let branchName = line.trim().substring(1).trim();
         const laneName = this.currentLane.replace('@', '');
         const normalizedLaneName = this.normalizeId(laneName);
         
@@ -462,6 +468,11 @@ class BpmnLiteParser {
         // Check for custom label format |Label|content
         if (branchName.startsWith('|') && branchName.includes('|', 1)) {
           const labelEnd = branchName.indexOf('|', 1);
+          branchLabel = branchName.substring(1, labelEnd);
+          displayName = branchName.substring(labelEnd + 1).trim();
+        } else if (branchName.startsWith('"') && branchName.includes('"', 1)) {
+          // Support "Label" content format (common in examples)
+          const labelEnd = branchName.indexOf('"', 1);
           branchLabel = branchName.substring(1, labelEnd);
           displayName = branchName.substring(labelEnd + 1).trim();
         }
@@ -699,6 +710,286 @@ class BpmnLiteParser {
         }
       }
 
+      connectTasks() {
+        // Implement the correct connectivity model
+        console.log('=== Establishing Connections (New Model) ===');
+        
+        // Phase 1: Build global task order
+        const globalTaskOrder = this.buildGlobalTaskOrder();
+        
+        // Phase 2: Create implicit sequential connections
+        this.createImplicitConnections(globalTaskOrder);
+        
+        // Phase 3: Process explicit connections from arrows
+        this.processExplicitArrowConnections();
+        
+        // Phase 4: Connect message flows
+        this.connectMessageFlows();
+        
+        // Phase 5: Handle special connections (gateways, events)
+        this.handleSpecialConnections(globalTaskOrder);
+        
+        console.log(`Total connections: ${this.connections.length}`);
+      }
+      
+      buildGlobalTaskOrder() {
+        const taskOrder = [];
+        const lines = this.originalText.split('\n');
+        let currentLane = null;
+        
+        // Process lines in order to build sequential task list
+        for (let i = 0; i < lines.length; i++) {
+          const line = lines[i].trim();
+          if (!line) continue;
+          
+          // Skip breaks, comments, process definitions
+          if (line === '---' || line.match(/^-{3,}$/) || line.startsWith('//') || line.startsWith(':')) {
+            continue;
+          }
+          
+          // Track lane changes
+          if (line.startsWith('@')) {
+            currentLane = line;
+            continue;
+          }
+          
+          // Find tasks created from this line
+          const tasksInLine = this.findTasksCreatedAtLine(i);
+          
+          // Add non-branch, non-comment tasks to order
+          tasksInLine.forEach(taskId => {
+            const task = this.tasks[taskId];
+            if (task && task.type !== 'branch' && task.type !== 'comment') {
+              taskOrder.push({
+                id: taskId,
+                lineNumber: i,
+                lane: task.lane
+              });
+            }
+          });
+        }
+        
+        console.log(`Built global task order: ${taskOrder.length} tasks`);
+        return taskOrder;
+      }
+      
+      findTasksCreatedAtLine(lineNumber) {
+        const tasks = [];
+        for (const [taskId, line] of Object.entries(this.taskLineNumbers)) {
+          if (line === lineNumber) {
+            tasks.push(taskId);
+          }
+        }
+        return tasks;
+      }
+      
+      createImplicitConnections(globalTaskOrder) {
+        console.log('Creating implicit sequential connections...');
+        let count = 0;
+        
+        for (let i = 1; i < globalTaskOrder.length; i++) {
+          const prev = globalTaskOrder[i - 1];
+          const curr = globalTaskOrder[i];
+          
+          // Check for connection break
+          if (this.hasConnectionBreakBetween(prev.lineNumber, curr.lineNumber)) {
+            console.log(`Break between ${prev.id} and ${curr.id}`);
+            continue;
+          }
+          
+          // Create implicit connection
+          this.addConnection('flow', prev.id, curr.id);
+          count++;
+        }
+        
+        console.log(`Created ${count} implicit connections`);
+      }
+      
+      processExplicitArrowConnections() {
+        console.log('Processing explicit arrow connections...');
+        let count = 0;
+        
+        // Process each line looking for arrows
+        const lines = this.originalText.split('\n');
+        
+        for (let i = 0; i < lines.length; i++) {
+          const line = lines[i].trim();
+          if (!line || !line.includes('->') && !line.includes('<-')) continue;
+          
+          // Parse arrow connections in this line
+          const connections = this.parseArrowConnections(line, i);
+          
+          connections.forEach(conn => {
+            this.addConnection('flow', conn.from, conn.to);
+            count++;
+            console.log(`Explicit: ${conn.from} -> ${conn.to}`);
+          });
+        }
+        
+        console.log(`Created ${count} explicit connections`);
+      }
+      
+      parseArrowConnections(line, lineNumber) {
+        const connections = [];
+        const parts = this.splitConnections(line);
+        
+        // Track what each part resolves to
+        const resolvedParts = [];
+        
+        for (let i = 0; i < parts.length; i++) {
+          const part = parts[i];
+          
+          if (part === '->' || part === '<-') {
+            resolvedParts.push({ type: 'arrow', value: part });
+          } else {
+            // Resolve this part to task ID(s)
+            const taskId = this.resolvePartToTaskId(part, lineNumber);
+            if (taskId) {
+              resolvedParts.push({ type: 'task', value: taskId });
+            }
+          }
+        }
+        
+        // Now create connections based on arrows
+        for (let i = 0; i < resolvedParts.length; i++) {
+          const curr = resolvedParts[i];
+          
+          if (curr.type === 'arrow') {
+            const prev = i > 0 ? resolvedParts[i - 1] : null;
+            const next = i < resolvedParts.length - 1 ? resolvedParts[i + 1] : null;
+            
+            if (curr.value === '->') {
+              if (prev && prev.type === 'task' && next && next.type === 'task') {
+                connections.push({ from: prev.value, to: next.value });
+              }
+            } else if (curr.value === '<-') {
+              if (prev && prev.type === 'task' && next && next.type === 'task') {
+                connections.push({ from: next.value, to: prev.value });
+              }
+            }
+          }
+        }
+        
+        return connections;
+      }
+      
+      resolvePartToTaskId(part, lineNumber) {
+        // First check if this part creates a new task
+        const tasksAtLine = this.findTasksCreatedAtLine(lineNumber);
+        
+        // Try to match by content
+        const normalized = this.normalizeId(part);
+        
+        for (const taskId of tasksAtLine) {
+          const task = this.tasks[taskId];
+          if (task && (this.normalizeId(task.name) === normalized || 
+                      (task.messageName && this.normalizeId(task.messageName) === normalized))) {
+            return taskId;
+          }
+        }
+        
+        // If not found in current line, resolve as reference
+        return this.resolveTaskId(part, false);
+      }
+      
+      connectMessageFlows() {
+        // Already implemented in original parser
+        const sendTasks = Object.values(this.tasks).filter(task => task.type === 'send');
+        const receiveTasks = Object.values(this.tasks).filter(task => task.type === 'receive');
+        
+        sendTasks.forEach(sendTask => {
+          const messageName = sendTask.messageName;
+          if (!messageName) return;
+          
+          const matchingReceive = receiveTasks.find(receiveTask => 
+            receiveTask.messageName === messageName
+          );
+          
+          if (matchingReceive) {
+            const hasBreak = this.hasConnectionBreakBetween(
+              this.taskLineNumbers[sendTask.id],
+              this.taskLineNumbers[matchingReceive.id]
+            );
+            
+            if (!hasBreak) {
+              // Create message if not exists
+              const messageId = `message_${this.normalizeId(messageName)}`;
+              
+              if (!this.messages.find(m => m.id === messageId)) {
+                this.messages.push({
+                  type: 'message',
+                  name: messageName,
+                  id: messageId,
+                  sourceRef: sendTask.id,
+                  targetRef: matchingReceive.id
+                });
+              }
+              
+              this.addConnection('message', sendTask.id, matchingReceive.id, messageName);
+            }
+          }
+        });
+      }
+      
+      handleSpecialConnections(globalTaskOrder) {
+        // Handle gateways
+        Object.values(this.tasks).forEach(task => {
+          if (task.type === 'gateway' && task.branches) {
+            // Connect gateway to branches
+            task.branches.forEach(branchId => {
+              this.addConnection('flow', task.id, branchId);
+            });
+            
+            // Find merge point for branches
+            const gatewayIndex = globalTaskOrder.findIndex(t => t.id === task.id);
+            let mergePoint = null;
+            
+            // Look for next non-branch task
+            for (let i = gatewayIndex + 1; i < globalTaskOrder.length; i++) {
+              const candidate = globalTaskOrder[i];
+              const candidateTask = this.tasks[candidate.id];
+              
+              if (candidateTask && candidateTask.type !== 'branch') {
+                mergePoint = candidate.id;
+                break;
+              }
+            }
+            
+            // Connect branches to merge point (unless they have explicit connections)
+            if (mergePoint) {
+              task.branches.forEach(branchId => {
+                // Check if branch already has outgoing connections
+                const hasOutgoing = this.connections.some(conn => 
+                  conn.sourceRef === branchId && conn.type === 'sequenceFlow'
+                );
+                
+                if (!hasOutgoing) {
+                  this.addConnection('flow', branchId, mergePoint);
+                }
+              });
+            }
+          }
+        });
+        
+        // Handle Start/End events
+        if (this.tasks['process_start'] && globalTaskOrder.length > 0) {
+          this.addConnection('flow', 'process_start', globalTaskOrder[0].id);
+        }
+        
+        if (this.tasks['process_end']) {
+          // Find tasks with no outgoing connections
+          globalTaskOrder.forEach(task => {
+            const hasOutgoing = this.connections.some(conn => 
+              conn.sourceRef === task.id && conn.type === 'sequenceFlow'
+            );
+            
+            if (!hasOutgoing) {
+              this.addConnection('flow', task.id, 'process_end');
+            }
+          });
+        }
+      }
+      
       connectSequentialTasks() {
         // First build a map of tasks and their sequence
         const gatewayMap = {};
@@ -862,6 +1153,39 @@ class BpmnLiteParser {
             // Always connect positive branches to the next task if available
             if (data.nextTask) {
               this.addConnection('flow', branchId, data.nextTask);
+            } else {
+              // If no next task in current lane, connect to first task of next lane
+              const currentLaneName = Object.keys(this.lanes).find(laneName => 
+                this.lanes[laneName].tasks.includes(gatewayId)
+              );
+              
+              if (currentLaneName) {
+                const laneNames = Object.keys(this.lanes);
+                const currentLaneIndex = laneNames.indexOf(currentLaneName);
+                
+                // Look for the next lane
+                if (currentLaneIndex < laneNames.length - 1) {
+                  const nextLaneName = laneNames[currentLaneIndex + 1];
+                  const nextLane = this.lanes[nextLaneName];
+                  
+                  // Find first non-branch task in next lane
+                  for (const taskId of nextLane.tasks) {
+                    const task = this.tasks[taskId];
+                    if (task && task.type !== 'branch') {
+                      // Check for connection break
+                      const hasBreak = this.hasConnectionBreakBetween(
+                        this.taskLineNumbers[branchId],
+                        this.taskLineNumbers[taskId]
+                      );
+                      
+                      if (!hasBreak) {
+                        this.addConnection('flow', branchId, taskId);
+                      }
+                      break;
+                    }
+                  }
+                }
+              }
             }
           });
           
@@ -1289,13 +1613,15 @@ class BpmnLiteParser {
         // Add process-level events (Start/End) outside of any subgraph
         Object.values(this.tasks).forEach(task => {
           if (task.type === 'event' && (task.eventType === 'start' || task.eventType === 'end') && task.lane === null) {
-            mermaid += `  ${task.id}([${task.name}]):::event\n`;
+            const escapedName = task.name.replace(/"/g, '&quot;').replace(/\[/g, '&lsqb;').replace(/\]/g, '&rsqb;');
+            mermaid += `  ${task.id}(["${escapedName}"]):::event\n`;
           }
         });
 
         // Add data objects
         this.dataObjects.forEach(dataObj => {
-          mermaid += `  ${dataObj.id}[(${dataObj.name})]:::dataObject\n`;
+          const escapedName = dataObj.name.replace(/"/g, '&quot;').replace(/\[/g, '&lsqb;').replace(/\]/g, '&rsqb;');
+          mermaid += `  ${dataObj.id}[("${escapedName}")]:::dataObject\n`;
         });
 
         // Group by lanes/pools
@@ -1328,25 +1654,27 @@ class BpmnLiteParser {
               
               if (!task) return;
               
+              const escapedName = task.name.replace(/"/g, '&quot;').replace(/\[/g, '&lsqb;').replace(/\]/g, '&rsqb;');
+              
               switch(task.type) {
                 case 'task':
-                  mermaid += `    ${task.id}[${task.name}]:::task\n`;
+                  mermaid += `    ${task.id}["${escapedName}"]:::task\n`;
                   break;
                 case 'send':
                 case 'receive':
-                  mermaid += `    ${task.id}>${task.name}]:::message\n`;
+                  mermaid += `    ${task.id}>"${escapedName}"]:::message\n`;
                   break;
                 case 'gateway':
-                  mermaid += `    ${task.id}{${task.name}?}:::gateway\n`;
+                  mermaid += `    ${task.id}{"${escapedName}?"}:::gateway\n`;
                   break;
                 case 'branch':
-                  mermaid += `    ${task.id}["${task.name}"]:::branch\n`;
+                  mermaid += `    ${task.id}["${escapedName}"]:::branch\n`;
                   break;
                 case 'comment':
-                  mermaid += `    ${task.id}[/${task.name}/]:::comment\n`;
+                  mermaid += `    ${task.id}["/${escapedName}/"]:::comment\n`;
                   break;
                 case 'event':
-                  mermaid += `    ${task.id}([${task.name}]):::event\n`;
+                  mermaid += `    ${task.id}(["${escapedName}"]):::event\n`;
                   break;
               }
             });
@@ -1381,11 +1709,13 @@ class BpmnLiteParser {
             if (source && target) {
               if (source.type === 'gateway' && target.type === 'branch') {
                 // Special formatting for gateway branches with labels
-                mermaid += `  ${conn.sourceRef} -->|${target.label}| ${conn.targetRef}\n`;
+                const escapedLabel = (target.label || '').replace(/"/g, '&quot;').replace(/\[/g, '&lsqb;').replace(/\]/g, '&rsqb;');
+                mermaid += `  ${conn.sourceRef} -->|"${escapedLabel}"| ${conn.targetRef}\n`;
               } else if (source.type === 'gateway' && target.type === 'event' && target.eventType === 'end') {
                 // Gateway to End event with label (from branch)
                 const label = conn.name || 'Yes'; // Default to 'Yes' if no label specified
-                mermaid += `  ${conn.sourceRef} -->|${label}| ${conn.targetRef}\n`;
+                const escapedLabel = label.replace(/"/g, '&quot;').replace(/\[/g, '&lsqb;').replace(/\]/g, '&rsqb;');
+                mermaid += `  ${conn.sourceRef} -->|"${escapedLabel}"| ${conn.targetRef}\n`;
               } else {
                 mermaid += `  ${conn.sourceRef} --> ${conn.targetRef}\n`;
               }
@@ -1397,8 +1727,9 @@ class BpmnLiteParser {
         mermaid += '  %% Message flows\n';
         this.connections.forEach(conn => {
           if (conn.type === 'messageFlow') {
-            const label = conn.name ? `|${conn.name}|` : '';
-            mermaid += `  ${conn.sourceRef} -.->${ label } ${conn.targetRef}\n`;
+            const escapedLabel = (conn.name || '').replace(/"/g, '&quot;').replace(/\[/g, '&lsqb;').replace(/\]/g, '&rsqb;');
+            const labelStr = escapedLabel ? `|"${escapedLabel}"|` : '';
+            mermaid += `  ${conn.sourceRef} -.->${ labelStr } ${conn.targetRef}\n`;
           }
         });
         
@@ -1413,15 +1744,3 @@ class BpmnLiteParser {
         return mermaid;
       }
     }
-
-// Export for different environments
-if (typeof module !== 'undefined' && module.exports) {
-  // Node.js / CommonJS
-  module.exports = { BpmnLiteParser };
-} else if (typeof define === 'function' && define.amd) {
-  // AMD
-  define([], function() { return { BpmnLiteParser }; });
-} else {
-  // Browser global
-  window.BpmnLiteParser = BpmnLiteParser;
-}

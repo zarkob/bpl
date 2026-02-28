@@ -33,11 +33,20 @@ for (let i = 0; i < lines.length; i++) {
   if (inClass) {
     classLines.push(line);
     
+    // Strip strings FIRST, then comments, to avoid counting braces inside them
+    // and to avoid treating // inside strings as comments
+    let lineToProcess = line.replace(/'[^']*'/g, "''");
+    lineToProcess = lineToProcess.replace(/"[^"]*"/g, '""');
+    lineToProcess = lineToProcess.replace(/`[^`]*`/g, '``');
+    lineToProcess = lineToProcess.split('//')[0]; // Strip single-line comments
+
     // Count braces
-    for (const char of line) {
+    for (const char of lineToProcess) {
       if (char === '{') braceCount++;
       if (char === '}') braceCount--;
     }
+    
+    // console.log(`Line ${i+1}: braceCount=${braceCount}, line="${line.trim()}"`);
     
     // Check if class is complete
     if (braceCount === 0 && classLines.length > 1) {
@@ -62,6 +71,13 @@ if (!fs.existsSync(sharedDir)) {
 // Save original JavaScript version
 fs.writeFileSync(path.join(sharedDir, 'parser-original.js'), parserCode);
 console.log('✓ Saved original parser to shared/parser-original.js');
+
+// Also update shared/bpmn-lite-parser.js if it exists
+const bpmnLiteParserPath = path.join(sharedDir, 'bpmn-lite-parser.js');
+if (fs.existsSync(bpmnLiteParserPath)) {
+  fs.writeFileSync(bpmnLiteParserPath, parserCode);
+  console.log('✓ Updated shared/bpmn-lite-parser.js');
+}
 
 // Generate TypeScript version
 console.log('\nGenerating TypeScript version...');
